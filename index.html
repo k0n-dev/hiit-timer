@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>HIIT Timer</title>
+  <link rel="stylesheet" href="style.css">
+  <script src="app.js" defer></script>
+</head>
+<body>
+  <main>
+    <section id="settings" class="settings">
+      <header><p class="eyebrow">MOVE AT YOUR PACE</p><h1>HIIT Timer <small>v0.1</small></h1>
+        <p class="muted">メニューを整えて、トレーニングを始めましょう。</p></header>
+      <form id="workout-form" novalidate>
+        <div class="summary"><span id="workout-summary"></span><strong id="total-time"></strong></div>
+        <div class="workout-options">
+          <label>準備運動（秒・0で省略）<input id="warmup-seconds" type="number" min="0" max="86400" step="1" value="120"></label>
+          <label>運動時間・全種目共通（秒）<input id="work-seconds" type="number" min="1" max="86400" step="1" value="20"></label>
+          <label>休憩時間・全種目共通（秒）<input id="rest-seconds" type="number" min="1" max="86400" step="1" value="40"></label>
+          <label>整理運動（秒・0で省略）<input id="cooldown-seconds" type="number" min="0" max="86400" step="1" value="60"></label>
+          <label>周回数（Rounds）<input id="rounds" type="number" min="1" step="1" value="1"></label>
+        </div>
+        <div id="exercise-inputs"></div>
+        <button id="add-exercise" class="add-exercise" type="button">＋ 種目を追加</button>
+        <p id="validation-error" class="error" role="alert"></p>
+        <button class="primary start" type="submit">START <span>→</span></button>
+      </form>
+      <p class="note">画面を開いたままご利用ください。消音設定や画面ロック中は、通知音が鳴らない場合があります。</p>
+    </section>
+
+    <section id="timer" class="timer" aria-label="トレーニング" hidden>
+      <header class="timer-header">
+        <div><p class="eyebrow">HIIT TIMER</p><p id="interval-count"></p><p id="round-progress" class="round-progress" hidden></p></div>
+        <aside class="next-panel" aria-label="次の区間"><p class="eyebrow">NEXT</p><strong id="next-name"></strong><span id="next-duration"></span></aside>
+      </header>
+      <div class="timer-center">
+        <p id="timer-status" class="eyebrow"></p>
+        <h2 id="current-name"></h2>
+        <div id="remaining-time" class="clock" role="timer" aria-label="残り時間"></div>
+        <progress id="interval-progress" max="1" value="0" aria-label="現在の区間の進捗"></progress>
+      </div>
+      <div class="controls">
+        <button id="pause-button" class="primary" type="button">Pause</button>
+        <button id="stop-button" class="text-button" type="button" hidden>Stop</button>
+        <div class="navigation"><button id="previous-button" type="button">← Previous</button><button id="next-button" type="button">Next →</button></div>
+        <button id="settings-button" class="text-button" type="button" hidden>設定画面に戻る</button>
+      </div>
+    </section>
+  </main>
+</body>
+</html>

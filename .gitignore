@@ -1,0 +1,18 @@
+# Dependencies and local configuration
+node_modules/
+.env
+.env.*
+!.env.example
+
+# Logs and temporary files
+*.log
+*.tmp
+*.temp
+*.swp
+*~
+.DS_Store
+Thumbs.db
+
+# Private key files
+*.pem
+*.key

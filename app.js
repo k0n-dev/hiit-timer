@@ -6,6 +6,8 @@ const $ = (id) => document.getElementById(id);
 const rows = [];
 // 大量の区間生成によるブラウザの停止を避けるための上限。
 const MAX_INTERVALS = 10000;
+const STORAGE_KEY = "hiit-timer.settings.v1";
+const SHARE_BASE_URL = "https://k0n-dev.github.io/hiit-timer/";
 let workout = [];
 let currentIndex = 0;
 let remainingMs = 0;
@@ -48,6 +50,7 @@ function addExercise(name = "新しい種目") {
     row.remove();
     updateExerciseNumbers();
     updateTotal();
+    settingsChanged();
     $("add-exercise").focus();
   });
   updateExerciseNumbers();
@@ -61,10 +64,10 @@ function updateExerciseNumbers() {
     removeButton.setAttribute("aria-label", `種目${index + 1}を削除`);
   });
 }
-defaultExercises.forEach((name) => addExercise(name));
 $("add-exercise").addEventListener("click", () => {
   addExercise().nameInput.focus();
   updateTotal();
+  settingsChanged();
 });
 
 function validSeconds(input) {
@@ -116,8 +119,144 @@ function updateTotal() {
   $("workout-summary").textContent = valid ? `${sets}運動セット · ${countIntervals(settings)}区間` : "設定を確認してください";
   $("total-time").textContent = valid ? `合計 ${formatTime(total)}` : "合計 —";
 }
-$("workout-form").addEventListener("input", updateTotal);
-updateTotal();
+// 保存・URLは外部入力として型と範囲を確認します。実行中の状態は含めません。
+function validSettings(settings) {
+  if (!settings || typeof settings !== "object") return false;
+  const validDuration = (value, minimum) => Number.isInteger(value) && value >= minimum && value <= 86400;
+  return validDuration(settings.warmup, 0) && validDuration(settings.cooldown, 0) &&
+    validDuration(settings.work, 1) && validDuration(settings.rest, 1) &&
+    Number.isSafeInteger(settings.rounds) && settings.rounds >= 1 &&
+    Array.isArray(settings.exercises) && settings.exercises.length >= 1 &&
+    settings.exercises.every((name) => typeof name === "string" && name.trim().length > 0) &&
+    countIntervals(settings) <= MAX_INTERVALS;
+}
+
+function defaultSettings() {
+  return { warmup: 120, work: 20, rest: 40, cooldown: 60, rounds: 1, exercises: [...defaultExercises] };
+}
+
+function formSettings() {
+  // 空欄をNumberで0に変換して保存してしまわないよう、フォームも検証します。
+  const settings = readSettings();
+  const validInputs = validRounds() && ["warmup-seconds", "work-seconds", "rest-seconds", "cooldown-seconds"].every((id) => validSeconds($(id)));
+  return validInputs && validSettings(settings) ? settings : null;
+}
+
+function serializePreset(settings) {
+  return JSON.stringify({ version: 1, warmup: settings.warmup, work: settings.work,
+    rest: settings.rest, cooldown: settings.cooldown, rounds: settings.rounds,
+    exercises: settings.exercises.map((name) => name.trim()) });
+}
+
+function parsePreset(json) {
+  try {
+    const data = JSON.parse(json);
+    if (data?.version !== 1 || !validSettings(data)) return null;
+    // 許可した設定フィールドだけを取り込みます。
+    const { warmup, work, rest, cooldown, rounds } = data;
+    return { warmup, work, rest, cooldown, rounds, exercises: data.exercises.map((name) => name.trim()) };
+  } catch { return null; }
+}
+
+function saveSettings(settings) {
+  try {
+    window.localStorage.setItem(STORAGE_KEY, serializePreset(settings));
+    $("storage-status").textContent = "設定はこのブラウザに自動保存されます。";
+    return true;
+  } catch {
+    $("storage-status").textContent = "この環境では設定を保存できません。設定URLで控えを残せます。";
+    return false;
+  }
+}
+
+function applySettings(settings) {
+  rows.forEach(({ row }) => row.remove());
+  rows.length = 0;
+  settings.exercises.forEach((name) => addExercise(name));
+  for (const [id, value] of [["warmup-seconds", settings.warmup], ["work-seconds", settings.work],
+    ["rest-seconds", settings.rest], ["cooldown-seconds", settings.cooldown], ["rounds", settings.rounds]]) {
+    $(id).value = value;
+    $(id).setAttribute("aria-invalid", "false");
+  }
+  $("validation-error").textContent = "";
+  $("share-url-panel").hidden = true;
+  $("share-url").value = "";
+  updateTotal();
+}
+
+function settingsChanged() {
+  $("share-url-panel").hidden = true;
+  $("share-url").value = "";
+  $("settings-status").textContent = "";
+  const settings = formSettings();
+  if (settings) saveSettings(settings);
+}
+
+function loadSettings() {
+  let stored = null;
+  let fromUrl = null;
+  try { stored = parsePreset(window.localStorage.getItem(STORAGE_KEY)); }
+  catch { $("storage-status").textContent = "この環境では設定を保存できません。設定URLで控えを残せます。"; }
+  try {
+    if (window.location.hash.startsWith("#preset=")) {
+      fromUrl = parsePreset(decodeURIComponent(window.location.hash.slice(8)));
+    }
+  } catch { /* 不正なエンコードのURLは無視 */ }
+  applySettings(fromUrl || stored || defaultSettings());
+  if (fromUrl) {
+    saveSettings(fromUrl);
+    $("settings-status").textContent = "URLから設定を読み込みました。";
+    try {
+      window.history.replaceState(window.history.state, "", window.location.pathname + window.location.search);
+    } catch {
+      $("settings-status").textContent += " URL末尾の#以降を削除すると、再読み込み時の再適用を防げます。";
+    }
+  }
+}
+
+$("workout-form").addEventListener("input", () => {
+  updateTotal();
+  settingsChanged();
+});
+
+$("copy-settings-url").addEventListener("click", async () => {
+  const settings = formSettings();
+  $("share-url-panel").hidden = true;
+  $("share-url").value = "";
+  if (!settings) {
+    $("settings-status").textContent = "種目名・秒数・周回数を正しく入力してからコピーしてください（最大10000区間）。";
+    return;
+  }
+  let url;
+  try { url = `${SHARE_BASE_URL}#preset=${encodeURIComponent(serializePreset(settings))}`; }
+  catch {
+    $("settings-status").textContent = "設定URLを生成できませんでした。種目名の文字を確認してください。";
+    return;
+  }
+  try {
+    await navigator.clipboard.writeText(url);
+    $("settings-status").textContent = "設定URLをコピーしました。";
+  } catch {
+    $("share-url").value = url;
+    $("share-url-panel").hidden = false;
+    $("share-url").focus();
+    $("share-url").select();
+    $("settings-status").textContent = "自動コピーできませんでした。下のURLを手動でコピーしてください。";
+  }
+});
+
+$("reset-settings").addEventListener("click", () => {
+  if (!window.confirm("設定を初期設定に戻しますか？")) return;
+  const settings = defaultSettings();
+  applySettings(settings);
+  saveSettings(settings);
+  $("settings-status").textContent = "初期設定に戻しました。";
+});
+
+loadSettings();
+window.addEventListener("hashchange", () => {
+  if (state === "settings") loadSettings();
+});
 
 // STARTのユーザー操作で音声を有効化。利用できなくてもタイマーは動作します。
 function enableAudio() {

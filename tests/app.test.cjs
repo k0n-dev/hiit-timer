@@ -20,9 +20,10 @@ class Element {
   setAttribute(key, value) { this.attributes[key] = value; }
   addEventListener(event, handler) { this.listeners[event] = handler; }
   focus() {}
+  select() { this.selected = true; }
 }
 
-function setup() {
+function setup(options = {}) {
   const elements = {};
   let now = 0;
   let sounds = 0;
@@ -56,12 +57,46 @@ function setup() {
     input.type = 'number'; input.min = ['warmup-seconds', 'cooldown-seconds'].includes(id) ? '0' : '1'; input.step = '1'; input.value = value;
     if (id !== 'rounds') input.max = '86400';
   }
-  const context = vm.createContext({ document, window: { AudioContext }, performance: { now: () => now }, setInterval() {} });
+  const storage = options.storage || new Map();
+  const location = new URL(options.url || 'http://localhost:8000/');
+  const copied = [];
+  const window = {
+    AudioContext, location, listeners: {},
+    confirm: () => options.confirmResult ?? true,
+    addEventListener(event, handler) { this.listeners[event] = handler; },
+    history: {
+      state: { preserved: true },
+      replaceState(state, title, url) {
+        if (options.historyThrows) throw new Error('History unavailable');
+        this.state = state;
+        location.href = new URL(url, location).href;
+      }
+    }
+  };
+  Object.defineProperty(window, 'localStorage', {
+    get() {
+      if (options.storageUnavailable) throw new Error('Storage unavailable');
+      return {
+        getItem: (key) => storage.get(key) ?? null,
+        setItem(key, value) {
+          if (options.storageWriteFails) throw new Error('Quota exceeded');
+          storage.set(key, value);
+        }
+      };
+    }
+  });
+  const navigator = options.clipboardUnavailable ? {} : {
+    clipboard: { async writeText(text) {
+      if (options.clipboardRejects) throw new Error('Permission denied');
+      copied.push(text);
+    } }
+  };
+  const context = vm.createContext({ document, window, navigator, performance: { now: () => now }, setInterval() {} });
   vm.runInContext(fs.readFileSync(path.join(__dirname, '../app.js'), 'utf8'), context);
   const run = (code) => vm.runInContext(code, context);
   const click = (id) => elements[id].listeners.click();
   return {
-    run, click, elements, document, oscillators,
+    run, click, elements, document, oscillators, storage, location, window, copied,
     start: () => elements['workout-form'].listeners.submit({ preventDefault() {} }),
     advance(ms, refresh = true) { now += ms; if (refresh) run('refresh()'); },
     sounds: () => sounds, resumes: () => resumes,
@@ -348,4 +383,164 @@ test('both omitted: pause/resume, Previous/Next, Stop and restart remain usable'
   h.start(); assert.equal(h.run('currentIndex'), 0);
   assert.equal(h.elements['current-name'].textContent, 'ゴブレットスクワット');
   assert.equal(h.run('remainingMs'), 20000);
+});
+
+const storageKey = 'hiit-timer.settings.v1';
+const customPreset = {
+  version: 1, warmup: 0, work: 8, rest: 9, cooldown: 0, rounds: 2,
+  exercises: ['スクワット 🏋️', '左右 & ステップ #1 + 2 / 100%', 'スクワット 🏋️']
+};
+const presetHash = (preset) => '#preset=' + encodeURIComponent(JSON.stringify(preset));
+const settingsOf = (h) => JSON.parse(h.run('JSON.stringify(readSettings())'));
+const withoutVersion = ({ version, ...settings }) => settings;
+
+test('valid changes autosave and reload restores ordered names, durations and rounds only', () => {
+  const h = setup();
+  h.run("rows[0].nameInput.value='日本語テスト 🏃'");
+  h.set('warmup-seconds', 0); h.set('cooldown-seconds', 0);
+  h.set('rounds', 3); h.set('work-seconds', 7); h.set('rest-seconds', 11);
+  h.click('add-exercise');
+  h.run('rows[1].removeButton.listeners.click()');
+  const saved = JSON.parse(h.storage.get(storageKey));
+  assert.equal(saved.version, 1);
+  assert.deepEqual(withoutVersion(saved), settingsOf(h));
+  const restored = setup({ storage: h.storage });
+  assert.deepEqual(settingsOf(restored), settingsOf(h));
+  assert.equal(restored.run('state'), 'settings');
+  assert.deepEqual(Object.keys(saved).sort(), ['version','warmup','work','rest','cooldown','rounds','exercises'].sort());
+  const before = h.storage.get(storageKey);
+  h.start(); h.advance(1250); h.click('pause-button');
+  assert.equal(h.storage.get(storageKey), before); // 実行状態・残り時間は保存しない
+});
+
+test('incomplete or invalid edits never replace the last valid saved settings', async () => {
+  const h = setup(); h.set('rounds', 2);
+  const saved = h.storage.get(storageKey);
+  for (const [id, value] of [['warmup-seconds',''], ['work-seconds',0], ['rest-seconds',-1], ['rounds',1.5], ['rounds',1000000]]) {
+    const previous = h.elements[id].value;
+    h.set(id,value);
+    assert.equal(h.storage.get(storageKey),saved);
+    await h.click('copy-settings-url');
+    assert.equal(h.copied.length,0);
+    assert.equal(h.elements['share-url-panel'].hidden,true);
+    h.set(id,previous);
+  }
+  h.run("rows[0].nameInput.value='   '");
+  h.elements['workout-form'].listeners.input();
+  assert.equal(h.storage.get(storageKey),saved);
+  h.click('add-exercise'); // 他の項目が無効な状態の追加でも保存を壊さない
+  assert.equal(h.storage.get(storageKey),saved);
+});
+
+test('Japanese URL round-trip, fixed public base, URL precedence, save and fragment removal', async () => {
+  const oldStorage = new Map([[storageKey, JSON.stringify({ ...customPreset, rounds: 1, exercises: ['保存済み'] })]]);
+  const h = setup({ storage: oldStorage, url: 'http://192.168.1.2:8000/?test=1' + presetHash(customPreset) });
+  assert.deepEqual(settingsOf(h), withoutVersion(customPreset));
+  assert.deepEqual(JSON.parse(h.storage.get(storageKey)),customPreset);
+  assert.equal(h.location.href,'http://192.168.1.2:8000/?test=1');
+  assert.equal(h.window.history.state.preserved,true);
+  assert.match(h.elements['settings-status'].textContent,/URLから/);
+  await h.click('copy-settings-url');
+  assert.equal(h.copied.length,1);
+  assert.equal(h.copied[0],'https://k0n-dev.github.io/hiit-timer/' + presetHash(customPreset));
+  assert.match(h.elements['settings-status'].textContent,/コピーしました/);
+  const receiver = setup({ url:h.copied[0] });
+  assert.deepEqual(settingsOf(receiver),withoutVersion(customPreset));
+  // 読み込み後に変更し、fragment除去後のURLでリロードしても古い設定が再適用されない。
+  h.set('rounds',3);
+  const reloaded = setup({ storage:h.storage, url:h.location.href });
+  assert.equal(reloaded.elements.rounds.value,'3');
+  // 同じ共有URLを再び開くと、改めて設定を取り込む。
+  reloaded.location.hash=presetHash(customPreset);
+  reloaded.window.listeners.hashchange();
+  assert.equal(reloaded.elements.rounds.value,'2');
+  assert.equal(reloaded.location.hash,'');
+});
+
+test('bad URL or storage data safely falls back without overwriting valid saved data', () => {
+  const invalidPresets = [null, [], { ...customPreset, version:2 }, { ...customPreset, work:0 },
+    { ...customPreset, rest:'9' }, { ...customPreset, warmup:-1 }, { ...customPreset, cooldown:1.5 },
+    { ...customPreset, rounds:0 }, { ...customPreset, rounds:1000000 },
+    { ...customPreset, exercises:[] }, { ...customPreset, exercises:[' '] }, { ...customPreset, exercises:[null] }];
+  const invalidHashes = ['#preset=%E0%A4%A', '#preset=%7Bbad', '#preset=', '#other=123', ...invalidPresets.map(presetHash)];
+  for (const hash of invalidHashes) {
+    const json = JSON.stringify(customPreset);
+    const h = setup({ storage:new Map([[storageKey,json]]), url:'https://k0n-dev.github.io/hiit-timer/' + hash });
+    assert.deepEqual(settingsOf(h),withoutVersion(customPreset));
+    assert.equal(h.storage.get(storageKey),json);
+  }
+  for (const json of ['{bad', ...invalidPresets.map((preset) => JSON.stringify(preset))]) {
+    const h = setup({ storage:new Map([[storageKey,json]]) });
+    assert.deepEqual(settingsOf(h),JSON.parse(h.run('JSON.stringify(defaultSettings())')));
+    assert.equal(h.storage.get(storageKey),json);
+    h.start(); assert.equal(h.run('state'),'running');
+  }
+});
+
+test('clipboard unavailable or rejected offers a selectable manual URL, and edits clear stale URL', async () => {
+  for (const options of [{ clipboardUnavailable:true }, { clipboardRejects:true }]) {
+    const h = setup(options); h.set('rounds',2);
+    await h.click('copy-settings-url');
+    assert.equal(h.elements['share-url-panel'].hidden,false);
+    assert.equal(h.elements['share-url'].selected,true);
+    assert.match(h.elements['share-url'].value,/^https:\/\/k0n-dev.github.io\/hiit-timer\/#preset=/);
+    assert.match(h.elements['settings-status'].textContent,/手動/);
+    const restored = setup({ url:h.elements['share-url'].value });
+    assert.deepEqual(settingsOf(restored),settingsOf(h));
+    h.set('rounds',3);
+    assert.equal(h.elements['share-url-panel'].hidden,true);
+    assert.equal(h.elements['share-url'].value,'');
+  }
+});
+
+test('reset confirmation, cancellation, save and reload of defaults', () => {
+  const h = setup({ url:'https://k0n-dev.github.io/hiit-timer/' + presetHash(customPreset), confirmResult:false });
+  const before = h.storage.get(storageKey);
+  h.click('reset-settings');
+  assert.deepEqual(settingsOf(h),withoutVersion(customPreset));
+  assert.equal(h.storage.get(storageKey),before);
+  const accepted = setup({ storage:h.storage });
+  accepted.click('reset-settings');
+  const defaults = JSON.parse(accepted.run('JSON.stringify(defaultSettings())'));
+  assert.deepEqual(settingsOf(accepted),defaults);
+  assert.deepEqual(settingsOf(setup({ storage:h.storage })),defaults);
+  assert.equal(accepted.elements['total-time'].textContent,'合計 09:00');
+  assert.match(accepted.elements['settings-status'].textContent,/初期設定/);
+});
+
+test('blocked storage and quota failures still allow import, editing, sharing, reset and START', async () => {
+  for (const options of [{ storageUnavailable:true }, { storageWriteFails:true }]) {
+    const h = setup({ ...options, url:'https://k0n-dev.github.io/hiit-timer/' + presetHash(customPreset) });
+    assert.deepEqual(settingsOf(h),withoutVersion(customPreset));
+    assert.match(h.elements['storage-status'].textContent,/保存できません/);
+    assert.equal(h.location.hash,'');
+    h.set('rounds',3);
+    await h.click('copy-settings-url'); assert.equal(h.copied.length,1);
+    h.start(); assert.equal(h.run('state'),'running');
+    h.click('pause-button'); h.click('stop-button'); h.click('reset-settings');
+    assert.equal(h.elements.rounds.value,'1');
+    h.start(); assert.equal(h.elements['current-name'].textContent,'準備運動');
+  }
+  const unavailable = setup({ storageUnavailable:true });
+  assert.equal(unavailable.elements['total-time'].textContent,'合計 09:00');
+  unavailable.start(); assert.equal(unavailable.run('state'),'running');
+});
+
+test('extra data is not saved/shared and imported names are plain input values', async () => {
+  const preset = { ...customPreset, exercises:['<img src=x onerror=alert(1)>'], token:'not-a-real-secret', state:'running', remainingMs:123 };
+  const h = setup({ url:'https://k0n-dev.github.io/hiit-timer/' + presetHash(preset) });
+  assert.equal(h.run('rows[0].nameInput.value'),preset.exercises[0]);
+  assert.equal(h.run('state'),'settings');
+  assert.equal(JSON.parse(h.storage.get(storageKey)).token,undefined);
+  await h.click('copy-settings-url');
+  const shared = JSON.parse(decodeURIComponent(new URL(h.copied[0]).hash.slice(8)));
+  assert.equal(shared.token,undefined); assert.equal(shared.state,undefined); assert.equal(shared.remainingMs,undefined);
+});
+
+test('history API failure leaves the imported app working and explains fragment removal', () => {
+  const h = setup({ historyThrows:true, url:'https://k0n-dev.github.io/hiit-timer/' + presetHash(customPreset) });
+  assert.deepEqual(settingsOf(h),withoutVersion(customPreset));
+  assert.deepEqual(JSON.parse(h.storage.get(storageKey)),customPreset);
+  assert.match(h.elements['settings-status'].textContent,/#以降を削除/);
+  h.start(); assert.equal(h.run('state'),'running');
 });

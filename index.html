@@ -23,6 +23,15 @@
         </div>
         <div id="exercise-inputs"></div>
         <button id="add-exercise" class="add-exercise" type="button">＋ 種目を追加</button>
+        <div class="settings-actions">
+          <button id="copy-settings-url" type="button">設定URLをコピー</button>
+          <button id="reset-settings" type="button">初期設定に戻す</button>
+        </div>
+        <p id="settings-status" class="note" role="status"></p>
+        <label id="share-url-panel" hidden>共有URL（選択してコピーしてください）
+          <textarea id="share-url" rows="4" readonly></textarea>
+        </label>
+        <p id="storage-status" class="note" role="status"></p>
         <p id="validation-error" class="error" role="alert"></p>
         <button class="primary start" type="submit">START <span>→</span></button>
       </form>
